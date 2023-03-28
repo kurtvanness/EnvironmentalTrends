@@ -153,8 +153,53 @@ def mann_kendall_seasonal(df,
 def trend_direction(df,
                     results_column,
                     season_column = None,
-                    confidence_categories = {0.67:'Likely', 0.9:'Very likely'},
+                    confidence_categories = {0.90:'Very likely', 0.67:'Likely'},
                     neutral_category = 'Indeterminate'):
+    '''
+    A function that applies a Mann-Kendall trend test, determines a continuous
+    scale confidence that the trend is increasing and categorises the result
+
+    Parameters
+    ----------
+    df : DataFrame
+        The DataFrame that contains the results to be analysed.
+    results_column : string
+        The column name for the column containing results
+    season_column : string, optional
+        The optional column name for a column indicating the season.
+        The default is None.
+    confidence_categories : dictionary with decimal keys and string values, optional
+        A dictionary that creates the symmetrical boundaries for confidence
+        categories and the names that should be used for those categories.
+        Only the upper thresholds need defined so values should be between 0.5
+        and 1.0. Lower thresholds will be made symmetric, where 'increasing' 
+        and 'decreasing' will be added to the categories that are not the
+        neutral category. Trends between the smallest cutoff and 1 minus that
+        cutoff will be assigned to the neutral category.
+        The default is {0.90:'Very likely', 0.67:'Likely'}.
+    neutral_category : string, optional
+        The name to be used for the category where the trend is as likely
+        increasing as it is decreasing.
+        The default is 'Indeterminate'.
+
+    Raises
+    ------
+    ValueError
+        An error raised if the confidence category dictionary includes a cutoff
+        outside the range of 0.5 to 1.0.
+
+    Returns
+    -------
+    Series
+        A Series that contains:
+            - the trend method (seasonal or non-seasonal)
+            - the Mann-Kendall S-statistic result
+            - the variance of the S-statistic
+            - the Mann-Kendall p-value
+            - the confidence of an increasing scale ranging from 0% - 100%
+            - the trend category
+
+    '''
     
     # Determine whether to use seasonal or non-seasonal test based on
     # whether a season_column is provided.
@@ -190,6 +235,7 @@ def trend_direction(df,
     
     # Convert confidence to a trend category
     for cutoff, category in confidence_categories.items():
+        # Check cutoff values
         if cutoff >= 1.0 or cutoff <= 0.5:
             raise ValueError(f'A cutoff value of {cutoff} was included. Cutoffs'
                              'must be between 0.5 and 1.0.')
@@ -201,4 +247,5 @@ def trend_direction(df,
     else:
         trend += ' decreasing'
     
-    return method, p, C, trend
+    return pd.Series([method,s,var,p,round(C*100,2),trend],
+                     index=['TrendMethod','MK-S','MK-Var','MK-pValue','IncreasingConfidence%','TrendCategory'])
