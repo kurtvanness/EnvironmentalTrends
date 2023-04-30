@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "environmentaltrends"
+version = "0.0.1"
+description = "A python package for analysing environmental data for trends."
+authors = ["Kurt van Ness <vanness.kurt@gmail.com>"]
+readme = "README.md"
+repository = "https://github.com/kurtvanness/EnvironmentalTrends"
+license = "Apache-2.0"
+packages = [{include = "environmentaltrends"}]
+
+[tool.poetry.dependencies]
+python = "^3.9"
+numpy = "^1.24.2"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

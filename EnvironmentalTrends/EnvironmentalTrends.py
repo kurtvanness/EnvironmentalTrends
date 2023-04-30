@@ -1,530 +1,43 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Mon Mar 27 10:39:17 2023
-
-@author: KurtV
-"""
 
 import numpy as np
 import pandas as pd
-from scipy import stats
-from datetime import datetime
-import censoredsummarystats as css
+from .utils import kruskal_wallis_test, trend_direction, trend_magnitude, current_water_year
+import censoredsummarystats as censored
 
-#%% Seasonality Test
+# Set default column names
+trend_end_col = 'TrendEnd'
+trend_len_col = 'TrendLength'
+trend_period_col = 'TrendPeriod'
+freq_col = 'Frequency'
+freq_num_col = 'Seasons/year'
+trend_date_col = '__TrendDate__'
+trend_year_col = '__TrendYear__'
+trend_season_col = '__TrendSeason__'
+date_proximity_col = '__DateProximity__'
+season_mid_col = '__SeasonMidpoint__'
+censor_col = 'CensorComponent'
+numeric_col = 'NumericComponent'
 
-def kruskal_wallis_test(df,
-                        results_column,
-                        season_column,
-                        alpha=0.05):
-    '''
-    A function that runs the Kruskal-Wallis seasonality test on a dataset.
-
-    Parameters
-    ----------
-    df : DataFrame
-        A Dataframe that contains a column with results and a column indicating
-        the season for each result.
-    results_column : string
-        The column name for the column containing the results with a numeric
-        data type.
-    season_column : string
-        The column name for the column indicating the season for each result
-    alpha : float
-        The threshold p-value for seasonal vs. non-seasonal.
-        The default is 0.05.
-
-    Returns
-    -------
-    Series
-        A Series that contains:
-            -the p-value result from the Kruskal-Wallis function
-            -the resulting seasonality (using a 0.05 cutoff)
-            -a comment that explains why particular datasets may not have a seasonality result
-
-    '''
-    
-    # Copy the DataFrame
-    df = df.copy()
-    
-    # Set default outputs
-    KW_p = np.nan
-    KW_seasonality = 'N/A'
-    
-    # Convert results column to float
-    df[results_column] = df[results_column].astype(float)
-    
-    # Determine the unique seasons
-    seasons = df[season_column].unique()
-    
-    # Use default values if there are not multiple seasons
-    if len(seasons) < 2:
-        pass
-    # If all values are identical, consider the result non-seasonal
-    elif len(df[results_column].unique()) < 2:
-        KW_p = 1.0
-        KW_seasonality = 'Non-seasonal'
-    else:
-        # Perform the Kruskal-Wallis test
-        KW = stats.kruskal(*[df[df[season_column]==i][results_column] for i in seasons])
-        # Record the p-value
-        KW_p = KW.pvalue
-        # Using 0.05 as the cutoff, determine seasonality
-        if KW_p <= alpha:
-            KW_seasonality = 'Seasonal'
-        elif KW_p > alpha:
-            KW_seasonality = 'Non-seasonal'
-    
-    return pd.Series([KW_p,KW_seasonality],
-                     index=['KW-pValue','Seasonality'])
-
-#%% Trend Direction
-
-def mann_kendall(df,
-                 results_column):
-    '''
-    A function that calculates the Mann-Kendall S-statistic and variance
-    for a dataset
-
-    Parameters
-    ----------
-    df : DataFrame
-        A DataFrame containing the results to be analysed in a Mann-Kendall analysis
-    results_column : string
-        The column name for the column containing the results with a numeric
-        data type.
-
-    Returns
-    -------
-    Series
-        A Series that contains:
-            - the Mann-Kendall S-statistic result
-            - the variance of the S-statistic
-
-    '''
-    
-    # Copy the DataFrame
-    df = df.copy()
-    
-    # Convert results column to float
-    df[results_column] = df[results_column].astype(float)
-    
-    # Convert Series to numpy array
-    data = df[results_column].to_numpy()
-    
-    # Determine length of dataset
-    n = data.size
-    
-    # Create array/matrix of increases (+1), decreases (-1), and ties (0)
-    # to determine the Mann-Kendall S-statistic
-    s = np.sign(np.subtract.outer(data, data))
-    # Sum the upper triangle of the matrix
-    s = np.triu(s).sum()
-    
-    # Determine the unique values and number of multiple occurences(ties)
-    counts = np.unique(data, return_counts=True)[1]
-    
-    # Use the number of repeated values to adjust the variance calculation
-    if len(counts) == n:
-        tt = 0
-    else:
-        counts = counts[counts>1]
-        tt = np.sum(counts * (counts-1) * (2 * counts + 5))
-    var = (n*(n-1)*(2*n+5)-tt)/18.
-    
-    return pd.Series([s,var],
-                     index=['MK-S','MK-Var'])
-
-def mann_kendall_seasonal(df,
-                          results_column,
-                          season_column):
-    '''
-    A function that analyses data within each season using a Mann-Kendall test
-    and combines the results into an overall S-statistic and variance result
-
-    Parameters
-    ----------
-    df : DataFrame
-        A DataFrame with columns indicating the season and a column indicating
-        the result
-    results_column : string
-        The column name for the column containing the results with a numeric
-        data type.
-    season_column : string
-        The column name for the column indicating the season
-
-    Returns
-    -------
-    output : Series
-        A Series that contains:
-            - the overall Mann-Kendall S-statistic result
-            - the overall variance of the S-statistic
-
-    '''
-    
-    # Group by season and sum each seasons S and variance to get
-    # an overall S and variance
-    output = df.groupby(season_column).apply(mann_kendall, results_column).sum()
-    
-    return output
-
-def trend_direction(df,
-                    results_column,
-                    seasonal_test = False,
-                    season_column = None,
-                    confidence_categories = {0.90:'Very likely', 0.67:'Likely'},
-                    neutral_category = 'Indeterminate'):
-    '''
-    A function that applies a Mann-Kendall trend test, determines a continuous
-    scale confidence that the trend is increasing and categorises the result
-
-    Parameters
-    ----------
-    df : DataFrame
-        The DataFrame that contains the results to be analysed.
-    results_column : string
-        The column name for the column containing results with a numeric
-        data type.
-    seasonal_test : boolean, optional
-        Set as True to perform a seasonal Mann-Kendall test
-        The default is False.
-    season_column : string, optional
-        The optional column name for a column indicating the season.
-        The default is None.
-    confidence_categories : dictionary with decimal keys and string values, optional
-        A dictionary that creates the symmetrical boundaries for confidence
-        categories and the names that should be used for those categories.
-        Only the upper thresholds need defined so values should be between 0.5
-        and 1.0. Lower thresholds will be made symmetric, where 'increasing' 
-        and 'decreasing' will be added to the categories that are not the
-        neutral category. Trends between the smallest cutoff and 1 minus that
-        cutoff will be assigned to the neutral category.
-        The default is {0.90:'Very likely', 0.67:'Likely'}.
-    neutral_category : string, optional
-        The name to be used for the category where the trend is as likely
-        increasing as it is decreasing.
-        The default is 'Indeterminate'.
-
-    Raises
-    ------
-    ValueError
-        An error raised if the confidence category dictionary includes a cutoff
-        outside the range of 0.5 to 1.0.
-
-    Returns
-    -------
-    Series
-        A Series that contains:
-            - the trend method (seasonal or non-seasonal)
-            - the Mann-Kendall S-statistic result
-            - the variance of the S-statistic
-            - the Mann-Kendall p-value
-            - the confidence of an increasing scale ranging from 0% - 100%
-            - the trend category
-
-    '''
-    
-    # Determine whether to use seasonal or non-seasonal test based on
-    # whether a season_column is provided.
-    if seasonal_test:
-        method = 'Seasonal'
-        s, var = mann_kendall_seasonal(df,results_column,season_column)
-    else:
-        method = 'Non-seasonal'
-        s, var = mann_kendall(df,results_column)
-    
-    # Calculate the Z-score using the S-statistic and the variance
-    z = s - np.sign(s)
-    if z != 0:
-        z = z / np.sqrt(var)
-    
-    # Calculate the p-value from the Z-score
-    # where the p-value is determined for a two-tailed test
-    p = stats.norm.cdf(z)
-    p = 2*min(p, 1-p)
-    
-    # Convert p-value to confidence in the trend direction
-    C = 1 - 0.5*p
-    
-    # Convert confidence to a continuous scale of confidence that the trend is increasing
-    if s > 0:
-        C = 1 - C
-    
-    # Set default trend category
-    trend = neutral_category
-    
-    # Sort confidence categories from largest to smallest
-    confidence_categories = dict(sorted(confidence_categories.items(), reverse=True))
-    
-    # Convert confidence to a trend category
-    for cutoff, category in confidence_categories.items():
-        # Check cutoff values
-        if cutoff >= 1.0 or cutoff <= 0.5:
-            raise ValueError(f'A cutoff value of {cutoff} was included. Cutoffs'
-                             'must be between 0.5 and 1.0.')
-        if max(C, 1-C) >= cutoff:
-            trend = category
-            if C > 0.5:
-                trend += ' increasing'
-            else:
-                trend += ' decreasing'
-            break
-    
-    return pd.Series([method,s,var,p,round(C*100,2),trend],
-                     index=['DirectionMethod','MK-S','MK-Var','MK-pValue','IncreasingConfidence%','TrendCategory'])
-
-#%% Trend Magnitude
-
-def slopes(df,
-           results_column,
-           year_column,
-           season_column=None,
-           seasons_per_year=1):
-    '''
-    A function that determines all combinations of slopes that will be used in
-    a Sen slope analysis. The data must be of either annual, quarterly, or
-    monthly frequency.
-
-    Parameters
-    ----------
-    df : DataFrame
-        A DataFrame containing a numeric results and time information
-    results_column : string
-        The column name for the column containing numeric results
-    year_column : string
-        The column name for the column containing the year
-    season_column : string
-        The column name for a column with an integer representation of the season.
-    seasons_per_year : integer
-        The frequency of results to be analysed for a Sen slope.
-        The default is 1 season or annual data.
-
-    Raises
-    ------
-    Exception
-        Raised if the frequency is not one of the accepted strings or if there
-        are multiple results taken within one interval of the defined frequency
-
-    Returns
-    -------
-    slopes : list of floats
-        A list of slopes that can be used to determine the Sen slope.
-
-    '''
-    
-    # Copy the DataFrame
-    df = df.copy()
-    
-    # Convert year column to integer
-    df[year_column] = df[year_column].astype(int)
-    
-    # Convert results column to float
-    df[results_column] = df[results_column].astype(float)
-    
-    # Check that intervals_per_year is a factor of 12
-    if seasons_per_year not in [1,2,3,4,6,12]:
-        raise ValueError('seasons_per_year must be a factor of 12')
-    
-    # Convert season column to integer
-    if season_column:
-        df[season_column] = df[season_column].astype(int)
-    
-    # Determine the decimal value of the year for use in slopes
-    df['DecimalYear'] = df[year_column]
-    if season_column:
-        df['DecimalYear'] += df[season_column] / (seasons_per_year)
-    
-    # Check that only a single result occurs for each year
-    if not df['DecimalYear'].is_unique:
-        raise Exception('Only one result can be supplied within each interval ' \
-                        'of the defined frequency.')
-    
-    # Set y values and x values
-    y = np.array(df[results_column])
-    x = np.array(df['DecimalYear'])
-
-    # Compute sorted slopes only when deltax > 0
-    deltax = x[:, np.newaxis] - x
-    deltay = y[:, np.newaxis] - y
-    slopes = deltay[deltax > 0] / deltax[deltax > 0]
-    
-    return slopes
-
-def slopes_seasonal(df,
-                    results_column,
-                    year_column,
-                    season_column):
-    '''
-    A function that determines all combinations of slopes within each season
-    that will be used in a Sen slope analysis. The data must be of either
-    annual, quarterly, or monthly frequency.
-
-    Parameters
-    ----------
-    df : DataFrame
-        A DataFrame containing a numeric results and time information
-    results_column : string
-        The column name for the column containing numeric results
-    year_column : string
-        The column name for the column containing the year
-    season_column : string
-        The column name for the column indicating the season
-
-    Returns
-    -------
-    slopes : list of floats
-        A list of slopes that can be used to determine the Sen slope.
-
-    '''
-    # Determine the unique seasons
-    seasons = df[season_column].unique()
-    
-    slopes_seasonal = np.concatenate([slopes(df[df[season_column]==season],
-                                    results_column,
-                                    year_column,
-                                    seasons_per_year=1) for season in seasons])
-    
-    return slopes_seasonal
-
-
-def trend_magnitude(df,
-                    results_column,
-                    year_column,
-                    seasonal_test = False,
-                    season_column=None,
-                    seasons_per_year=1,
-                    percentile_method='hazen',
-                    confidence_interval=90):
-    '''
-    A function that determines the Sen slope for a dataset along with upper and
-    lower bound estimates for within a specific confidence interval.
-
-    Parameters
-    ----------
-    df : DataFrame
-        A DataFrame containing a numeric results and time information
-    results_column : string
-        The column name for the column containing numeric results
-    year_column : string
-        The column name for the column containing the year
-    seasonal_test : boolean, optional
-        Set as True to perform a seasonal Sen-slope analysis
-        The default is False.
-    season_column : string, optional
-        The column name for the column indicating the season.
-        The default is None.
-    seasons_per_year : integer
-        The frequency of results to be analysed for a Sen slope.
-        The default is 1 season or annual data.
-    percentile_method : string, optional
-        The percentile method. The options and definitions come from:
-            https://environment.govt.nz/assets/Publications/Files/hazen-percentile-calculator-2.xls
-            Options include the following, ordered from largest to smallest result.
-            - weiball
-            - tukey
-            - blom
-            - hazen
-            - excel
-        The default is hazen.
-    confidence_interval : integer or float, optional
-        The size of the confidence interval used to determine the lower and
-        upper bounds of the Sen slope. A 90 percent confidence interval
-        uses the 5th percentile for the lower bound and 95th percentile for
-        the upper bound.
-        The default is 90.
-
-    Returns
-    -------
-    Series
-        A Series that contains:
-            - the Sen slope method (seasonal or non-seasonal)
-            - the resulting Sen slope (median of all slopes)
-            - the lower bound of the confidence interval
-            - the upper bound of the confidence interval
-    '''
-    
-    # Copy the DataFrame
-    df = df.copy()
-    
-    # Determine whether to use seasonal or non-seasonal set of slopes based on
-    # whether a season_column is provided.
-    if seasonal_test:
-        method = 'Seasonal'
-        slopes = slopes_seasonal(df,results_column,year_column,season_column)
-    else:
-        method = 'Non-seasonal'
-        slopes = slopes(df,results_column,year_column,season_column,seasons_per_year)
-    
-    # Calculate median slope
-    median_slope = np.nan
-    if len(slopes) != 0:
-        median_slope = np.median(slopes)
-    
-    # Calculate confidence interval
-    
-    # Initialise bounds of confidence interval
-    lower_slope = np.nan
-    upper_slope = np.nan
-    
-    # Calculate the percentiles of the confidence interval
-    percentile_lower = (100-confidence_interval)/2
-    percentile_upper = 100 - percentile_lower
-    
-    # Set values for percentile methods
-    # https://environment.govt.nz/assets/Publications/Files/hazen-percentile-calculator-2.xls
-    method_dict = {'weiball':0.0, 'tukey':1/3, 'blom':3/8, 'hazen':1/2, 'excel':1.0}
-    # https://en.wikipedia.org/wiki/Percentile
-    C = method_dict[percentile_method]
-    
-    # Calculate minimum data size for percentile method to 
-    # ensure rank is at least 1 and no more than len(data)
-    # Note the same size is required for both the upper and lower percentile
-    minimum_size = round(C + (1-C)*(1-percentile_lower)/percentile_lower, 10)
-    
-    # Confidence interval can only be determined if there are enough slopes
-    # for the percentile method used to generate the interval
-    if len(slopes) >= minimum_size:
-        
-        # Map MfE method names to numpy method names
-        mfe_to_numpy_percentile = {
-            'weiball':'weibull',
-            'tukey':'median_unbiased',
-            'blom':'normal_unbiased',
-            'hazen':'hazen',
-            'excel':'linear'
-            }
-        
-        # Calculate percentiles for lower and upper bound of confidence interval
-        lower_slope = np.percentile(slopes,
-                                    percentile_lower,
-                                    method=mfe_to_numpy_percentile[percentile_method])
-        
-        upper_slope = np.percentile(slopes,
-                                    percentile_upper,
-                                    method=mfe_to_numpy_percentile[percentile_method])        
-    
-    return pd.Series([method,median_slope,lower_slope,upper_slope],
-                     index=['SlopeMethod','SenSlope','LowerBound','UpperBound'])
 
 #%% Preprocessing datasets for trends
 
-def define_intervals(df,
-                     intervals_per_year,
-                     date_columns='DateTime',
-                     date_format=None,
-                     end_month=6):
+def define_seasons(df,
+                   seasons_per_year,
+                   date_col='DateTime',
+                   date_format=None,
+                   end_month=6):
     '''
     A function that adds columns for trend frequency, trend year, and
-    trend interval (for the trend year) i.e. quarter, month, etc.
+    trend season (for the trend year) i.e. quarter, month, etc.
 
     Parameters
     ----------
     df : DataFrame
         A DataFrame containing data for trend information including column(s)
         that describe the time of results to be analysed in a trend analysis
-    intervals_per_year : integer
+    seasons_per_year : integer
         The number of results per year that should be analysed in a trend analysis
-    date_columns : string or list of two strings, optional
+    date_col : string or list of two integers, optional
         The column name(s) for the column(s) that contains year and month information.
         A string value indicates a combined year month column (could also be
         date or datetime) with the format defined by date_format, two values
@@ -532,7 +45,7 @@ def define_intervals(df,
         separately, where the year column should be listed first.
         The default is 'DateTime'.
     date_format : string or None, optional
-        The date or datetime format used in date_columns when a single value is
+        The date or datetime format used in date_col when a single value is
         provided. This parameter should be left as 'None' if the date column is 
         already in a pandas datetime format or if the year and month are split
         into two columns.
@@ -551,19 +64,19 @@ def define_intervals(df,
     -------
     df : DataFrame
         The input dataframe with additional columns that include the trend
-        frequency, the trend year, the trend interval that the result
-        is in (quarter, month, etc.). If multiple results are in an interval,
-        then a reduction method must be chosen so there is one result per interval.
+        frequency, the trend year, the trend season that the result
+        is in (quarter, month, etc.). If multiple results are in a season,
+        then a reduction method must be chosen so there is one result per season.
 
     '''
     
     # Copy the DataFrame
     df = df.copy()
     
-    # Check that intervals_per_year is a factor of 12
-    if intervals_per_year not in [1,2,3,4,6,12]:
-        raise ValueError('intervals_per_year must be a factor of 12')
-    # Add columns for the data frequency and number of intervals per year
+    # Check that seasons_per_year is a factor of 12
+    if seasons_per_year not in [1,2,3,4,6,12]:
+        raise ValueError('seasons_per_year must be a factor of 12')
+    # Add columns for the data frequency and number of seasons per year
     else:
         freq_dict = {
             1:'Annually',
@@ -573,101 +86,96 @@ def define_intervals(df,
             6:'Bimonthly',
             12:'Monthly'
             }
-        df['Frequency'] = freq_dict[intervals_per_year]
-        df['Intervals/year'] = intervals_per_year
+        df[freq_col] = freq_dict[seasons_per_year]
+        df[freq_num_col] = seasons_per_year
     
     # Check that the end month provided is between 1 and 12
     if end_month - 1 not in range(12):
         raise ValueError('end_month must be an integer from 1 to 12')
     
     # If single column name, year month are within a single column
-    if isinstance(date_columns,str):
+    if isinstance(date_col,str):
         
         # Convert the date column using the provided format
         if date_format:
-            df[date_columns] = pd.to_datetime(df[date_columns], format=date_format)
+            df[date_col] = pd.to_datetime(df[date_col], format=date_format)
         
         # Copy the dates
-        df['TrendDate'] = df[date_columns].copy()
+        df[trend_date_col] = df[date_col].copy()
     
     # If year month columns provided then use them to generate Trend year and month
-    elif (isinstance(date_columns,list)) & (len(date_columns) == 2):
+    elif (isinstance(date_col,list)) & (len(date_col) == 2):
         
         # # Assign date_column_format
         # date_column_format = 'Year/Month'
         
         # Determine year and month column names
-        year_column = date_columns[0]
-        month_column = date_columns[1]
+        year_col = date_col[0]
+        month_col = date_col[1]
         
         # Generate artifical dates for the dateframe
-        df['TrendDate'] = pd.to_datetime(df[[year_column, month_column]].assign(DAY=15)).copy()
+        df[trend_date_col] = pd.to_datetime(df[[year_col, month_col]].assign(DAY=15)).copy()
     
     # If there are not 1 or 2 date column names provided, raise an error
     else:
-        raise ValueError('date_columns requires a string or a list of two strings.')
+        raise ValueError('date_col requires a string or a list of two strings.')
     
-    # Shift months forward by 12 months minus the end month so that the interval
+    # Shift months forward by 12 months minus the end month so that the seasons
     # and trend year align with the calendar year. For example,
     # the first month in the trend period will be month 1 and the first three months
     # will be quarter 1 and the year will be the year that the trend period ends
-    df['TrendDate'] = df['TrendDate'] + pd.DateOffset(months=12-end_month)
+    df[trend_date_col] = df[trend_date_col] + pd.DateOffset(months=12-end_month)
     
     # Add a column for the trend year
-    df['TrendYear'] = df['TrendDate'].dt.year
+    df[trend_year_col] = df[trend_date_col].dt.year
     
-    # Add a column to specify which interval the result is in
-    # Convert month to a 0-based index and floor divide by months per interval
+    # Add a column to specify which season the result is in
+    # Convert month to a 0-based index and floor divide by months per season
     # and then adjust back to 1-based index
-    df['TrendInterval'] = (df['TrendDate'].dt.month-1)//int(12/intervals_per_year) + 1
+    df[trend_season_col] = (df[trend_date_col].dt.month-1)//int(12/seasons_per_year) + 1
     
     return df
 
-def interval_reduction(df,
-                       groupby_columns=None,
-                       reduction_method=None,
-                       reduction_input=None,
-                       end_month=None):
+def season_reduction(df,
+                     results_col,
+                     groupby_columns,
+                     reduction_method=None,
+                     end_month=None,
+                     annual_date='-10-16'):
     '''
-    A function that reduces multiple results within an interval to a single result.
+    A function that reduces multiple results within a season to a single result.
 
     Parameters
     ----------
     df : DataFrame
         A DataFrame containing data for trend information including column(s)
         that describe the time of results to be analysed in a trend analysis
-    groupby_columns : list of strings, optional
+    results_col : string
+        The column name for the column that contains the numeric results. This is
+        only used if the results are non-censored and a stat reduction method is used.
+    groupby_columns : list of strings
         List of column names that should be used to create groups of datasets for trends.
-        The default is None.
     reduction_method : string, optional
-        The method used to reduce multiple values within an interval to a
+        The method used to reduce multiple values within a season to a
         single result. If None specified, then only a single result should be
-        included per interval. Options include:
+        included per season. Options include:
             - Stat-based reduction
-                - median: the median result in the interval
-                - average: the average result in the interval
-                - maximum: the maximum result in the interval
-                - minimum: the minimum result in the interval
+                - median: the median result in the season
+                - average: the average result in the season
+                - maximum: the maximum result in the season
+                - minimum: the minimum result in the season
             - Date-based reduction
-                - midpoint: the result closest to the middle of the interval
-                - first: the first result in the interval
-                - last: the last result in the interval
+                - midpoint: the result closest to the middle of the season
+                - first: the first result in the season
+                - last: the last result in the season
                 - nearest: the result closest to a particular date (only applies
                         for an annual frequency)
-    reduction_input : string, optional
-        An extra input needed to apply some reduction methods.
-        The extra input required for each method includes:
-            - Stat-based reductions
-                - Provide the column name for the column with numeric results.
-                    If the data is censored, then use interval_reduction_censored_stats
-            - Date-based reduction
-                - No additional inputs are needed unless 'nearest' method is used.
-                    For this method, provide a string of the month and day that
-                    will be appended to a year. Hyphens should be included such
-                    that the result in the interval closest to 16 October should
-                    be written as '-10-16'.
     end_month : integer, optional
         This is only required for the 'nearest' reduction method.
+    annual_date : string
+        The string of the month and day that will be used for the 'nearest' method.
+        Hyphens should be included such that reducing to the result in the year
+        closest to 16 October should be written as '-10-16'.
     
     Raises
     ------
@@ -678,106 +186,105 @@ def interval_reduction(df,
     -------
     df : DataFrame
         The input dataframe with additional columns that include the trend
-        frequency, the trend year, the trend interval that the result
-        is in (quarter, month, etc.). If multiple results are in an interval,
-        then a reduction method must be chosen so there is one result per interval.
+        frequency, the trend year, the trend season that the result
+        is in (quarter, month, etc.). If multiple results are in a season,
+        then a reduction method must be chosen so there is one result per season.
 
     '''
     
     # Copy the DataFrame
     df = df.copy()
     
-    # If no groups create empty list
-    if groupby_columns == None:
-        groupby_columns = []
-    
     # Add created columns to groupby_columns
-    reduction_groupby_columns = groupby_columns + ['Frequency','Intervals/year','TrendYear','TrendInterval']
+    reduction_groupby_columns = groupby_columns + [freq_col,freq_num_col,trend_year_col,trend_season_col]
     
     # Apply reduction method
     
     # If statistical reduction
     if reduction_method in ['median','average','maximum','minimum']:
         # Check for valid inputs
-        if not isinstance(reduction_input,str):
+        if not isinstance(results_col,str):
             raise ValueError('The "{}" reduction method requires a column \
-                             name for the results.'.format(reduction_method))                    
+                             name for the results.'.format(reduction_method))
+        # Convert results column to numeric
+        df[results_col] = df[results_col].astype(float)
         # Apply censored stat calculations
         if reduction_method == 'median':
-            df = df.groupby(reduction_groupby_columns)[reduction_input].median()
+            df = df.groupby(reduction_groupby_columns)[results_col].median()
         elif reduction_method == 'average':
-            df = df.groupby(reduction_groupby_columns)[reduction_input].mean()
+            df = df.groupby(reduction_groupby_columns)[results_col].mean()
         elif reduction_method == 'maximum':
-            df = df.groupby(reduction_groupby_columns)[reduction_input].max()
+            df = df.groupby(reduction_groupby_columns)[results_col].max()
         elif reduction_method == 'minimum':
-            df = df.groupby(reduction_groupby_columns)[reduction_input].min()
+            df = df.groupby(reduction_groupby_columns)[results_col].min()
         # Reset index
         df = df.reset_index()
         
     # If date based reduction
     elif reduction_method in ['first','last','nearest','midpoint']:
-        # If reduction method is to keep first or last in interval
+        # If reduction method is to keep first or last in season
         if reduction_method in ['first','last']:
             # Sort by date column
-            df.sort_values(by='TrendDate', inplace=True)
-            # Keep first/last result in each interval
+            df.sort_values(by=trend_date_col, inplace=True)
+            # Keep first/last result in each season
             df = df.drop_duplicates(subset=reduction_groupby_columns,
                                     keep=reduction_method)
-        # If reduction method is midpoint or nearest, a date needs defined for each interval
+        # If reduction method is midpoint or nearest, a date needs defined for each season
         elif reduction_method in ['nearest','midpoint']:
             # If nearest
             if reduction_method == 'nearest':
-                # Check for single interval per year
-                if df['Intervals/year'].max() != 1:
+                # Check for single season per year
+                if df[freq_num_col].max() != 1:
                     raise Exception('The nearest reduction method can only be applied ' \
-                                'if there is one interval per year.')
+                                'if there is one season per year.')
                 # If the provided month is not after the last month in the
                 # trend period, then the relevant date will have the same
                 # year as the trend period even when the trend period
-                nearest_month = int(reduction_input.split('-')[1]) + (12-end_month)
+                nearest_month = int(annual_date.split('-')[1]) + (12-end_month)
                 if nearest_month > 12:
                     nearest_month -= 12
-                annual_date = pd.to_datetime(df['TrendYear'].astype(str) + \
-                                                          reduction_input)
-                # Determine proximity of each date to the relevant interval date
-                df['DateProximity'] = abs(df['TrendDate'] - annual_date)
+                trend_annual_date = pd.to_datetime(df[trend_year_col].astype(str) + \
+                                                       nearest_month.astype(str) + \
+                                                       annual_date.split('-')[2])
+                # Determine proximity of each date to the relevant season date
+                df[date_proximity_col] = abs(df[trend_date_col] - trend_annual_date)
             # If midpoint
             else:
-                # Specify midpoint for each interval and each possible number of intervals per year
+                # Specify midpoint for each season and each possible number of seasons per year
                 conditions = [
-                    (df['Intervals/year'] == 1) & (df['TrendInterval'] == 1),
+                    (df[freq_num_col] == 1) & (df[trend_season_col] == 1),
                     
-                    (df['Intervals/year'] == 2) & (df['TrendInterval'] == 1),
-                    (df['Intervals/year'] == 2) & (df['TrendInterval'] == 2),
+                    (df[freq_num_col] == 2) & (df[trend_season_col] == 1),
+                    (df[freq_num_col] == 2) & (df[trend_season_col] == 2),
                     
-                    (df['Intervals/year'] == 3) & (df['TrendInterval'] == 1),
-                    (df['Intervals/year'] == 3) & (df['TrendInterval'] == 2),
-                    (df['Intervals/year'] == 3) & (df['TrendInterval'] == 3),
+                    (df[freq_num_col] == 3) & (df[trend_season_col] == 1),
+                    (df[freq_num_col] == 3) & (df[trend_season_col] == 2),
+                    (df[freq_num_col] == 3) & (df[trend_season_col] == 3),
                     
-                    (df['Intervals/year'] == 4) & (df['TrendInterval'] == 1),
-                    (df['Intervals/year'] == 4) & (df['TrendInterval'] == 2),
-                    (df['Intervals/year'] == 4) & (df['TrendInterval'] == 3),
-                    (df['Intervals/year'] == 4) & (df['TrendInterval'] == 4),
+                    (df[freq_num_col] == 4) & (df[trend_season_col] == 1),
+                    (df[freq_num_col] == 4) & (df[trend_season_col] == 2),
+                    (df[freq_num_col] == 4) & (df[trend_season_col] == 3),
+                    (df[freq_num_col] == 4) & (df[trend_season_col] == 4),
                     
-                    (df['Intervals/year'] == 6) & (df['TrendInterval'] == 1),
-                    (df['Intervals/year'] == 6) & (df['TrendInterval'] == 2),
-                    (df['Intervals/year'] == 6) & (df['TrendInterval'] == 3),
-                    (df['Intervals/year'] == 6) & (df['TrendInterval'] == 4),
-                    (df['Intervals/year'] == 6) & (df['TrendInterval'] == 5),
-                    (df['Intervals/year'] == 6) & (df['TrendInterval'] == 6),
+                    (df[freq_num_col] == 6) & (df[trend_season_col] == 1),
+                    (df[freq_num_col] == 6) & (df[trend_season_col] == 2),
+                    (df[freq_num_col] == 6) & (df[trend_season_col] == 3),
+                    (df[freq_num_col] == 6) & (df[trend_season_col] == 4),
+                    (df[freq_num_col] == 6) & (df[trend_season_col] == 5),
+                    (df[freq_num_col] == 6) & (df[trend_season_col] == 6),
                     
-                    (df['Intervals/year'] == 12) & (df['TrendInterval'] == 1),
-                    (df['Intervals/year'] == 12) & (df['TrendInterval'] == 2),
-                    (df['Intervals/year'] == 12) & (df['TrendInterval'] == 3),
-                    (df['Intervals/year'] == 12) & (df['TrendInterval'] == 4),
-                    (df['Intervals/year'] == 12) & (df['TrendInterval'] == 5),
-                    (df['Intervals/year'] == 12) & (df['TrendInterval'] == 6),
-                    (df['Intervals/year'] == 12) & (df['TrendInterval'] == 7),
-                    (df['Intervals/year'] == 12) & (df['TrendInterval'] == 8),
-                    (df['Intervals/year'] == 12) & (df['TrendInterval'] == 9),
-                    (df['Intervals/year'] == 12) & (df['TrendInterval'] == 10),
-                    (df['Intervals/year'] == 12) & (df['TrendInterval'] == 11),
-                    (df['Intervals/year'] == 12) & (df['TrendInterval'] == 12)
+                    (df[freq_num_col] == 12) & (df[trend_season_col] == 1),
+                    (df[freq_num_col] == 12) & (df[trend_season_col] == 2),
+                    (df[freq_num_col] == 12) & (df[trend_season_col] == 3),
+                    (df[freq_num_col] == 12) & (df[trend_season_col] == 4),
+                    (df[freq_num_col] == 12) & (df[trend_season_col] == 5),
+                    (df[freq_num_col] == 12) & (df[trend_season_col] == 6),
+                    (df[freq_num_col] == 12) & (df[trend_season_col] == 7),
+                    (df[freq_num_col] == 12) & (df[trend_season_col] == 8),
+                    (df[freq_num_col] == 12) & (df[trend_season_col] == 9),
+                    (df[freq_num_col] == 12) & (df[trend_season_col] == 10),
+                    (df[freq_num_col] == 12) & (df[trend_season_col] == 11),
+                    (df[freq_num_col] == 12) & (df[trend_season_col] == 12)
                     ]
 
                 results = [
@@ -816,67 +323,62 @@ def interval_reduction(df,
                     '-12-16'
                     ]
                 # Use the trend year to determine the relevant midpoint date
-                # when intervals have been aligned with the calendar year
-                df['IntervalMidpoint'] = np.select(conditions,
-                                                   pd.to_datetime(df['TrendYear'].astype(str) + results),
+                # when seasons have been aligned with the calendar year
+                df[season_mid_col] = np.select(conditions,
+                                                   pd.to_datetime(df[trend_year_col].astype(str) + results),
                                                    np.nan)
                 
                 # Determine the date proximity using the dates for the results
                 # that have been shifted so the trend period aligns with the
                 # calendar year
-                df['DateProximity'] = abs(df['TrendDate']-df['IntervalMidpoint'])
+                df[date_proximity_col] = abs(df[trend_date_col]-df[season_mid_col])
             
             # Sort by Proximity and take later sample time if ties
-            df = df.sort_values(by=['DateProximity','TrendDate'],ascending=[True,False])
+            df = df.sort_values(by=[date_proximity_col,trend_date_col],ascending=[True,False])
             # Keep single sample closest to target date
             df = df.drop_duplicates(subset=reduction_groupby_columns)
             # Drop temporary column
-            df = df.drop(columns=['DateProximity']).reset_index(drop=True)
+            df = df.drop(columns=[date_proximity_col]).reset_index(drop=True)
     else:
-        # If no reduction method, check that each interval has one result
+        # If no reduction method, check that each season has one result
         if df.groupby(reduction_groupby_columns).ngroups != len(df):
-            raise Exception('At least one interval contains multiple results. ' \
+            raise Exception('At least one season contains multiple results. ' \
                     'Specify a reduction method to reduce multiple results ' \
-                    'within an interval to a single result.')
+                    'within a season to a single result.')
     
     return df
     
-def interval_reduction_censored_stats(df,
-                                      groupby_columns=None,
-                                      reduction_method=None,
-                                      results_column = ['CensorComponent','NumericComponent'],
-                                      focus_high_potential = True,
-                                      include_negative_interval = False,
-                                      precision_tolerance_to_drop_censor = 0.25,
-                                      precision_rounding = True):
+def season_reduction_censored_stats(df,
+                                    results_col,
+                                    groupby_columns,
+                                    reduction_method=None,
+                                    focus_high_potential = True,
+                                    include_negative_interval = False,
+                                    precision_tolerance_to_drop_censor = 0.25,
+                                    precision_rounding = True):
     '''
     A function that adds columns for trend frequency, trend year, and
-    trend interval (for the trend year) i.e. quarter, month, etc. If multiple
-    results are within an interval, a reduction method is needed.
+    trend season (for the trend year) i.e. quarter, month, etc. If multiple
+    results are within a season, a reduction method is needed.
 
     Parameters
     ----------
     df : DataFrame
         A DataFrame containing data for trend information including column(s)
         that describe the time of results to be analysed in a trend analysis
-    groupby_columns : list of strings, optional
+    result_col : string
+        The column name for the column that contain the results as text.
+        Only four possible censors should be used (<,≤,≥,>).
+    groupby_columns : list of strings
         List of column names that should be used to create groups of datasets for trends.
-        The default is None.
     reduction_method : string, optional
-        The method used to reduce multiple values within an interval to a
+        The method used to reduce multiple values within a season to a
         single result. If None specified, then only a single result should be
-        included per interval. Options include:
-            - median: the median result in the interval
-            - average: the average result in the interval
-            - maximum: the maximum result in the interval
-            - minimum: the minimum result in the interval
-    results_column : list of strings, optional
-        The column name(s) for the column(s) that contain the results. If a 
-        single column name is given, it is assumed that the column contains
-        combined censor and numeric components. If two column names are
-        provided, then the first should only contain one of five censors (<,≤,,≥,>)
-        and the second should contain only numeric data.
-        The default is ['CensorComponent','NumericComponent'].
+        included per season. Options include:
+            - median: the median result in the season
+            - average: the average result in the season
+            - maximum: the maximum result in the season
+            - minimum: the minimum result in the season
     focus_high_potential : boolean, optional
         If True, then information on the highest potential result will be
         focused over the lowest potential result. Only relevant for median and
@@ -908,21 +410,17 @@ def interval_reduction_censored_stats(df,
     -------
     df : DataFrame
         The input dataframe with additional columns that include the trend
-        frequency, the trend year, the trend interval that the result
-        is in (quarter, month, etc.). If multiple results are in an interval,
-        then a reduction method must be chosen so there is one result per interval.
+        frequency, the trend year, the trend season that the result
+        is in (quarter, month, etc.). If multiple results are in a season,
+        then a reduction method must be chosen so there is one result per season.
 
     '''
     
     # Copy the DataFrame
     df = df.copy()
     
-    # If no groups create empty list
-    if groupby_columns == None:
-        groupby_columns = []
-    
     # Add created columns to groupby_columns
-    reduction_groupby_columns = groupby_columns + ['Frequency','Intervals/year','TrendYear','TrendInterval']
+    reduction_groupby_columns = groupby_columns + [freq_col,freq_num_col,trend_year_col,trend_season_col]
     
     # Apply reduction method
     
@@ -930,65 +428,46 @@ def interval_reduction_censored_stats(df,
     if reduction_method in ['median','average','maximum','minimum']:
         # Apply censored stat calculations
         if reduction_method == 'median':
-            df = css.median(df,
-                            reduction_groupby_columns,
-                            results_column,
-                            focus_high_potential,
-                            include_negative_interval,
-                            precision_tolerance_to_drop_censor,
-                            precision_rounding)
+            df = censored.median(df,
+                                 results_col,
+                                 reduction_groupby_columns,
+                                 focus_high_potential,
+                                 include_negative_interval,
+                                 precision_tolerance_to_drop_censor,
+                                 precision_rounding)
         elif reduction_method == 'average':
-            df = css.average(df,
-                             reduction_groupby_columns,
-                             results_column,
-                             focus_high_potential,
-                             include_negative_interval,
-                             precision_tolerance_to_drop_censor,
-                             precision_rounding)
+            df = censored.average(df,
+                                  results_col,
+                                  reduction_groupby_columns,
+                                  focus_high_potential,
+                                  include_negative_interval,
+                                  precision_tolerance_to_drop_censor,
+                                  precision_rounding)
         elif reduction_method == 'maximum':
-            df = css.maximum(df,
-                             reduction_groupby_columns,
-                             results_column,
-                             include_negative_interval,
-                             precision_tolerance_to_drop_censor,
-                             precision_rounding)
+            df = censored.maximum(df,
+                                  results_col,
+                                  reduction_groupby_columns,
+                                  include_negative_interval,
+                                  precision_tolerance_to_drop_censor,
+                                  precision_rounding)
         elif reduction_method == 'minimum':
-            df = css.minimum(df,
-                             reduction_groupby_columns,
-                             results_column,
-                             include_negative_interval,
-                             precision_tolerance_to_drop_censor,
-                             precision_rounding)
+            df = censored.minimum(df,
+                                  results_col,
+                                  reduction_groupby_columns,
+                                  include_negative_interval,
+                                  precision_tolerance_to_drop_censor,
+                                  precision_rounding)
         # Reset index
         df = df.reset_index()
         
     else:
-        # If no reduction method, check that each interval has one result
+        # If no reduction method, check that each season has one result
         if df.groupby(reduction_groupby_columns).ngroups != len(df):
-            raise Exception('At least one interval contains multiple results. ' \
+            raise Exception('At least one season contains multiple results. ' \
                     'Specify a reduction method to reduce multiple results ' \
-                    'within an interval to a single result.')
+                    'within a season to a single result.')
     
     return df
-
-def current_water_year():
-    '''    
-    Obtains the current water year. The 2020 water year is 1 July 2019 through 30 June 2020.
-    
-    Returns
-    -------
-    current_water_year : Integer
-        The current water year       
-    '''
-    
-    current_month = datetime.now().month
-    
-    if current_month < 7:
-        current_water_year = datetime.now().year
-    else:
-        current_water_year = datetime.now().year + 1
-        
-    return current_water_year
 
 def trend_periods(df,
                   trend_lengths,
@@ -1067,7 +546,7 @@ def trend_periods(df,
         data = df.copy()
         
         # Only consider data up through the end year
-        data = data[data['TrendYear'] <= end_year]
+        data = data[data[trend_year_col] <= end_year]
         
         # Determine DateTime for the end of the trend period
         end = pd.to_datetime('{}-{}-1'.format(end_year,end_month)) + \
@@ -1076,7 +555,7 @@ def trend_periods(df,
         
         # Add a column for the end of the trend, if output format specified
         if output_format_end:
-            data['TrendEnd'] = end.strftime(output_format_end)
+            data[trend_end_col] = end.strftime(output_format_end)
         
         # Loop through trend lengths for each end date
         for trend_length in trend_lengths:
@@ -1086,7 +565,7 @@ def trend_periods(df,
             start_year = end_year - (trend_length - 1)
             
             # Only keep years after and including the start year
-            data = data[data['TrendYear'] >= start_year].copy()
+            data = data[data[trend_year_col] >= start_year].copy()
             
             # Add a column for the trend period, if output format specified
             if output_format_period:
@@ -1095,12 +574,12 @@ def trend_periods(df,
                             pd.DateOffset(months=1) + \
                             pd.DateOffset(years=-trend_length)
                 
-                data['TrendPeriod'] = \
+                data[trend_period_col] = \
                     start.strftime(output_format_period) + ' to ' + \
                     end.strftime(output_format_period)
             
             # Add additional information columns
-            data['TrendLength'] = trend_length
+            data[trend_len_col] = trend_length
             
             # Append trend data to output
             output_df.append(data)
@@ -1114,7 +593,7 @@ def trend_periods(df,
 #%% Dataset Summary
 
 def describe_numeric_data(df,
-                          results_column):
+                          results_col):
     '''
     A function that provides a summary of a numeric column of a DataFrame.
 
@@ -1122,7 +601,7 @@ def describe_numeric_data(df,
     ----------
     df : DataFrame
         A DataFrame with a numeric column to describe.
-    results_column : string
+    results_col : string
         The name of the column containing numeric results.
 
     Returns
@@ -1134,17 +613,17 @@ def describe_numeric_data(df,
     
     # Determine summary stats of the numeric data
     count = len(df)
-    min_value = df[results_column].min()
-    median_value = df[results_column].max()
-    average_value = df[results_column].mean()
-    max_value = df[results_column].max()
+    min_value = df[results_col].min()
+    median_value = df[results_col].max()
+    average_value = df[results_col].mean()
+    max_value = df[results_col].max()
     
     return pd.Series([count,min_value,median_value,average_value,max_value],
                      index=['Count','Minimum','Median','Average','Maximum'])
 
 
 def describe_censored_data(df,
-                           results_column = ['CensorComponent','NumericComponent']):
+                           results_col):
     '''
     A function that provides a summary of censored data in a DataFrame.
 
@@ -1153,13 +632,9 @@ def describe_censored_data(df,
     df : DataFrame
         A DataFrame with a column with censored results or
         two columns containing the censor symbol and numeric component, respectively.
-    results_column : list of strings, optional
-        The column name(s) for the column(s) that contain the results. If a 
-        single column name is given, it is assumed that the column contains
-        combined censor and numeric components. If two column names are
-        provided, then the first should only contain one of five censors (<,≤,,≥,>)
-        and the second should contain only numeric data.
-        The default is ['CensorComponent','NumericComponent'].
+    result_col : string
+        The column name for the column that contain the results as text.
+        Only four possible censors should be used (<,≤,≥,>).
 
     Returns
     -------
@@ -1171,29 +646,25 @@ def describe_censored_data(df,
 
     '''
     
-    # If single result column provided, then split column
-    if len(results_column) == 1:
-        censor_column = 'CensorComponent'
-        numeric_column = 'NumericComponent'
-        df = css.result_to_components(df,results_column[0])
-    # Else define the names to use for the censor and numeric columns
-    else:
-        censor_column = results_column[0]
-        numeric_column = results_column[1]
+    # Create a copy of the DataFrame
+    df = df.copy()
+    
+    # Split the result into censor and numeric components
+    df = censored.result_to_components(df,results_col,censor_col,numeric_col)
     
     # Calculate summary stats on the censored data
     count = len(df)
     # Uncensored data stats
-    non_censored = df[df[censor_column]==''][numeric_column]
+    non_censored = df[df[censor_col]==''][numeric_col]
     min_value = non_censored.min()
     max_value = non_censored.max()
     # Left censored data stats
-    left_censored = df[df[censor_column].isin(['<','≤'])][numeric_column]
+    left_censored = df[df[censor_col].isin(['<','≤'])][numeric_col]
     count_left_censored = left_censored.count()
     min_detect_limit = left_censored.min()
     max_detect_limit = left_censored.max()
     # Right censored data stats
-    right_censored = df[df[censor_column].isin(['≥','>'])][numeric_column]
+    right_censored = df[df[censor_col].isin(['≥','>'])][numeric_col]
     count_right_censored = right_censored.count()
     min_quant_limit = right_censored.min()
     max_quant_limit = right_censored.max()
@@ -1208,7 +679,7 @@ def describe_censored_data(df,
 #%% Preprocessing dataset for individual trend result
 
 def prep_censored_data_for_trends(df,
-                                  results_column = ['CensorComponent','NumericComponent'],
+                                  results_col,
                                   lower_conversion_factor = 0.5,
                                   upper_conversion_factor = 1.1):
     '''
@@ -1220,14 +691,9 @@ def prep_censored_data_for_trends(df,
     ----------
     df : DataFrame
         A DataFrame containing results that may be censored
-    results_column : list of strings, optional
-        The column name(s) for the column(s) that contain the results. If a 
-        single column name is given, it is assumed that the column contains
-        combined censor and numeric components. If two column names are
-        provided, then the first should only contain one of five censors (<,≤,,≥,>)
-        and the second should contain only numeric data.
-        The default is ['CensorComponent','NumericComponent'].
-        DESCRIPTION. The default is 1.1.
+    result_col : string
+        The column name for the column that contain the results as text.
+        Only four possible censors should be used (<,≤,≥,>).
     lower_conversion_factor : float, optional
         The factor that will be used to scale all left censored results and all
         uncensored results that are less than the greatest detection limit.
@@ -1261,50 +727,43 @@ def prep_censored_data_for_trends(df,
     if lower_conversion_factor >= 1:
         raise ValueError('The lower conversion factor needs to be less than 1.')
     
-    # If single result column provided, then split column
-    if len(results_column) == 1:
-        censor_column = 'CensorComponent'
-        numeric_column = 'NumericComponent'
-        df = css.result_to_components(df,results_column[0])
-    # Else define the names to use for the censor and numeric columns
-    else:
-        censor_column = results_column[0]
-        numeric_column = results_column[1]
+    
+    df = censored.result_to_components(df,results_col,censor_col,numeric_col)
     
     # Create True/False indicator for uncensored data
-    non_censored_check = (df[censor_column] == '')
+    non_censored_check = (df[censor_col] == '')
     # Create True/False indicator for left censored data
-    left_censored_check = df[censor_column].isin(['<','≤'])
+    left_censored_check = df[censor_col].isin(['<','≤'])
     # Determine the maximum detection limit
-    max_detect_limit = df[left_censored_check][numeric_column].max()
+    max_detect_limit = df[left_censored_check][numeric_col].max()
     # Create True/False indicator for right censored data
-    right_censored_check = df[censor_column].isin(['≥','>'])
+    right_censored_check = df[censor_col].isin(['≥','>'])
     # Determine the minimum quantification limit
-    min_quant_limit = df[right_censored_check][numeric_column].min()
+    min_quant_limit = df[right_censored_check][numeric_col].min()
     
     # Convert all right censored data and all uncensored data that is greater
     # than the minimum quanitification limit to be equal to one
     # another and slightly larger than the limit
     if sum(right_censored_check) > 0:
-        df[numeric_column] = np.where((right_censored_check) | \
-                                      (non_censored_check & (df[numeric_column] > min_quant_limit)),
+        df[numeric_col] = np.where((right_censored_check) | \
+                                      (non_censored_check & (df[numeric_col] > min_quant_limit)),
                                       upper_conversion_factor*min_quant_limit,
-                                      df[numeric_column])
+                                      df[numeric_col])
     
     # Convert all left censored data and all uncensored data that is less
     # than the largest detection limit to be equal to one
     # another and less than the detection limit
     if sum(left_censored_check) > 0:
-        df[numeric_column] = np.where((left_censored_check) | \
-                                      (non_censored_check & (df[numeric_column] < max_detect_limit)),
+        df[numeric_col] = np.where((left_censored_check) | \
+                                      (non_censored_check & (df[numeric_col] < max_detect_limit)),
                                       lower_conversion_factor*max_detect_limit,
-                                      df[numeric_column])
+                                      df[numeric_col])
     
     return df
 
 
-def interval_counts(df,
-                    seasons_per_year):
+def season_counts(df,
+                  seasons_per_year):
     '''
     Function that describes how complete a dataset is within a trend period
 
@@ -1316,38 +775,38 @@ def interval_counts(df,
     Returns
     -------
     Series
-        A Series which describes the intervals within a trend analysis dataset:
+        A Series which describes the seasons within a trend analysis dataset:
             - The number of years with results
-            - The number of intervals with results
+            - The number of seasons with results
             - The percentage of years with results
-            - The percentage of intervals with results
+            - The percentage of seasons with results
 
     '''
     
     # Copy the DataFrame
     df = df.copy()
     
-    # Determine trend_length and intervals per year
-    trend_length = df['TrendLength'].iloc[0]
+    # Determine trend_length and seasons per year
+    trend_length = df[trend_len_col].iloc[0]
     
-    years = len(df.groupby(['TrendYear']))
-    intervals = len(df.groupby(['TrendYear','TrendInterval']))
+    years = len(df.groupby([trend_year_col]))
+    seasons = len(df.groupby([trend_year_col,trend_season_col]))
     percent_years = 100 * years / trend_length
-    percent_intervals = 100 * intervals / (seasons_per_year * trend_length)
+    percent_seasons = 100 * seasons / (seasons_per_year * trend_length)
     
-    return pd.Series([years,intervals,percent_years,percent_intervals],
-                     index=['YearsInPeriod','IntervalsInPeriod',
-                            'PercentOfYears','PercentOfIntervals'])
+    return pd.Series([years,seasons,percent_years,percent_seasons],
+                     index=['YearsInPeriod','SeasonsInPeriod',
+                            'PercentOfYears','PercentOfSeasons'])
     
 
 #%% Trend analysis for an individual dataset
 
 def trend_analysis(df,
-                   results_column,
+                   results_col,
                    seasons_per_year,
                    seasonal_test=False,
-                   year_column_for_slopes='TrendYear',
-                   season_column='TrendInterval',
+                   year_column_for_slopes=trend_year_col,
+                   season_column=trend_season_col,
                    censored_results=False,
                    censored_conversions=[0.5, 1.1],
                    seasonality_alpha=0.05,
@@ -1364,26 +823,26 @@ def trend_analysis(df,
     
     # Describe the dataset depending on whether results are censored or numeric
     if censored_results:
-        output.append(describe_censored_data(df,results_column))
+        output.append(describe_censored_data(df,results_col))
         # Convert censored data to have common censorship thresholds
         df = prep_censored_data_for_trends(df,
-                                           results_column = results_column,
+                                           results_col = results_col,
                                            lower_conversion_factor = censored_conversions[0],
                                            upper_conversion_factor = censored_conversions[1])
     else:
-        output.append(describe_numeric_data(df,results_column))
+        output.append(describe_numeric_data(df,results_col))
     
-    # Describe the interval counts of the dataset
-    output.append(interval_counts(df,seasons_per_year))
+    # Describe the season counts of the dataset
+    output.append(season_counts(df,seasons_per_year))
     
     # Create variable for numeric column
     if censored_results:
-        numeric_column = results_column[1]
+        numeric_column = results_col[1]
     else:
-        numeric_column = results_column
+        numeric_column = results_col
     
     # Sort by date
-    df = df.sort_values(by=['TrendDate'])
+    df = df.sort_values(by=[trend_date_col])
     
     # Perform a Seasonality test
     output.append(kruskal_wallis_test(df,
@@ -1414,25 +873,25 @@ def trend_analysis(df,
 #%% Trend analysis for a dataset
 
 def trends(df,
-           results_column,
+           results_col,
            seasons_per_year,
            trend_lengths,
            end_years=[current_water_year()-1],
            end_month=6,
            seasonal_test=False,
            groupby_columns=None,
-           date_columns='DateTime',
+           date_col='DateTime',
            date_format=None,
            reduction_method=None,
-           reduction_input=None,
+           annual_date='-10-16',
            focus_high_potential=True,
            include_negative_interval=False,
            precision_tolerance_to_drop_censor=0.25,
            precision_rounding=True,
            output_format_end='%Y',
            output_format_period='%b %Y',
-           year_column_for_slopes='TrendYear',
-           season_column = 'TrendInterval',
+           year_column_for_slopes=trend_year_col,
+           season_column = trend_season_col,
            censored_results=False,
            censored_conversions=[0.5, 1.1],
            seasonality_alpha=0.05,
@@ -1448,25 +907,26 @@ def trends(df,
     if groupby_columns == None:
         groupby_columns = []
     
-    # Classify results into a trend interval/season based on season frequency and trend year
-    df = define_intervals(df,seasons_per_year,date_columns,date_format,end_month)
+    # Classify results into a trend season based on season frequency and trend year
+    df = define_seasons(df,seasons_per_year,date_col,date_format,end_month)
     
     # Reduce multiple results within a season to a single value
     if (censored_results) & (reduction_method in ['median','average','maximum','minimum']):
-        df = interval_reduction_censored_stats(df,
-                                               groupby_columns,
-                                               reduction_method,
-                                               results_column,
-                                               focus_high_potential,
-                                               include_negative_interval,
-                                               precision_tolerance_to_drop_censor,
-                                               precision_rounding)
+        df = season_reduction_censored_stats(df,
+                                             results_col,  
+                                             groupby_columns,
+                                             reduction_method,
+                                             focus_high_potential,
+                                             include_negative_interval,
+                                             precision_tolerance_to_drop_censor,
+                                             precision_rounding)
     else:
-        df = interval_reduction(df,
-                                groupby_columns,
-                                reduction_method,
-                                reduction_input,
-                                end_month)
+        df = season_reduction(df,
+                             results_col,
+                             groupby_columns,
+                             reduction_method,
+                             end_month,
+                             annual_date)
     
     # Create dataset for each trend period
     df = trend_periods(df,
@@ -1476,27 +936,22 @@ def trends(df,
                        output_format_end,
                        output_format_period)
     
-    groupby_columns += ['TrendEnd','TrendLength','TrendPeriod','Frequency','Intervals/year']
+    trend_groups = groupby_columns + [trend_end_col,trend_len_col,trend_period_col,freq_col,freq_num_col]
     
     # Analyse each dataset
-    df = df.groupby(groupby_columns).apply(trend_analysis,
-                                            results_column,
-                                            seasons_per_year,
-                                            seasonal_test,
-                                            year_column_for_slopes,
-                                            season_column,
-                                            censored_results,
-                                            censored_conversions,
-                                            seasonality_alpha,
-                                            direction_confidence_categories,
-                                            direction_neutral_category,
-                                            slope_percentile_method,
-                                            slope_confidence_interval)
+    df = df.groupby(trend_groups).apply(trend_analysis,
+                                        results_col,
+                                        seasons_per_year,
+                                        seasonal_test,
+                                        year_column_for_slopes,
+                                        season_column,
+                                        censored_results,
+                                        censored_conversions,
+                                        seasonality_alpha,
+                                        direction_confidence_categories,
+                                        direction_neutral_category,
+                                        slope_percentile_method,
+                                        slope_confidence_interval)
     
     
     return df
-    
-    
-    
-    
-    
