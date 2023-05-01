@@ -10,7 +10,10 @@ packages = [{include = "environmentaltrends"}]
 
 [tool.poetry.dependencies]
 python = "^3.9"
-numpy = "^1.24.2"
+numpy = "^1.24"
+pandas = "^2.0"
+scipy = "^1.10"
+censoredsummarystats = "^0"
 
 
 [build-system]
