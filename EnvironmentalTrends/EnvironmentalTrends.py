@@ -1,8 +1,8 @@
 
 import numpy as np
 import pandas as pd
-from .utils import kruskal_wallis_test, trend_direction, trend_magnitude, current_water_year
 import censoredsummarystats as censored
+from .utils import kruskal_wallis_test, trend_direction, trend_magnitude, current_water_year
 
 # Set default column names
 trend_end_col = 'TrendEnd'
@@ -77,17 +77,16 @@ def define_seasons(df,
     if seasons_per_year not in [1,2,3,4,6,12]:
         raise ValueError('seasons_per_year must be a factor of 12')
     # Add columns for the data frequency and number of seasons per year
-    else:
-        freq_dict = {
-            1:'Annually',
-            2:'Semiannually',
-            3:'Triannually',
-            4:'Quarterly',
-            6:'Bimonthly',
-            12:'Monthly'
-            }
-        df[freq_col] = freq_dict[seasons_per_year]
-        df[freq_num_col] = seasons_per_year
+    freq_dict = {
+        1:'Annually',
+        2:'Semiannually',
+        3:'Triannually',
+        4:'Quarterly',
+        6:'Bimonthly',
+        12:'Monthly'
+        }
+    df[freq_col] = freq_dict[seasons_per_year]
+    df[freq_num_col] = seasons_per_year
     
     # Check that the end month provided is between 1 and 12
     if end_month - 1 not in range(12):
@@ -204,8 +203,8 @@ def season_reduction(df,
     if reduction_method in ['median','average','maximum','minimum']:
         # Check for valid inputs
         if not isinstance(results_col,str):
-            raise ValueError('The "{}" reduction method requires a column \
-                             name for the results.'.format(reduction_method))
+            raise ValueError('The "{}" reduction method requires a column' \
+                             'name for the results.'.format(reduction_method))
         # Convert results column to numeric
         df[results_col] = df[results_col].astype(float)
         # Apply censored stat calculations
@@ -904,7 +903,7 @@ def trends(df,
     df = df.copy()
     
     # If no groups create empty list
-    if groupby_columns == None:
+    if not groupby_columns:
         groupby_columns = []
     
     # Classify results into a trend season based on season frequency and trend year
@@ -936,7 +935,11 @@ def trends(df,
                        output_format_end,
                        output_format_period)
     
-    trend_groups = groupby_columns + [trend_end_col,trend_len_col,trend_period_col,freq_col,freq_num_col]
+    trend_groups = groupby_columns + [trend_end_col,
+                                      trend_len_col,
+                                      trend_period_col,
+                                      freq_col,
+                                      freq_num_col]
     
     # Analyse each dataset
     df = df.groupby(trend_groups).apply(trend_analysis,
