@@ -1,1 +1,1 @@
-from .trends import trends
+from environmentaltrends.trends2 import TrendData
