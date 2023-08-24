@@ -23,6 +23,62 @@ from environmentaltrends.single_trend_analysis import trend_analysis
 
 @dataclass
 class TrendData:
+    '''
+    This dataclass validates and pre-processes a dataframe for generating
+    trends.
+
+    Parameters
+    ----------
+    data : DataFrame
+        A pandas dataframe containing time series data
+    value_col : string
+        The column name for the column with censored results
+    date_col : string
+        The column name for the column containing DateTime information
+    year_col : string
+        Alternative option for a DateTime column. The column name for the
+        column containing the year.
+    month_col : string
+        Alternative option for a DateTime column. The column name for the
+        column containing the month as an integer.
+    seasonality_alpha : float
+        The p-value threshold for determining seasonality using the Kruskall-
+        Wallis test. The default is 0.05.
+    confidence_categories : dictionary of float keys and string values
+        The cutoffs used to establish trend likelihood categories. The default
+        is {0.90: 'Very likely', 0.67: 'Likely'}, meaning 90%+ confidence is
+        considered 'very likely' and 67%+ is consider 'likely'.
+    neutral_category : string
+        The category name for trends that do not meet the minimum threshold
+        set in confidence_categories. The default is 'Indeterminate'.
+    confidence_interval : float
+        The confidence interval to use for determining the upper and lower
+        slope estimates. The default is 90.
+    percentile_method : string
+        The percentile method to use for setting the confidence interval for
+        slopes. The default is 'hazen'. Additional options include 'weiball',
+        'tukey', 'blom', 'excel'.
+    output_format_trend_end : string
+        The format to use in the output column containing the end of the
+        trend period. The default is '%Y' which produces the year only.
+    output_format_trend_period : string
+        The format to use in the output column containing the entire trend
+        period. The default is '%b %Y' to output month and year for the start
+        and end of the trend period.
+    censored_values: boolean
+        An indicator for whether censored values are expected in the value_col.
+        The default is False.
+    censored_kwargs : dictionary
+        A dictionary of keywords and values to use for generation of a
+        CensoredData object. Users should be familiar with the Python package
+        censoredsummarystats.
+    lower_conversion_factor : float
+        The conversion factor to use for left censored values.
+        The default is 0.5 which assumes positive values only.
+    upper_conversion_factor : float
+        The conversion factor to use for right censored values.
+        The default is 1.1 which assumes positive values only.
+    '''
     data: pd.core.frame.DataFrame
     value_col: any
     date_col: str = None
@@ -65,17 +121,23 @@ class TrendData:
     percent_of_years_col: str = 'PercentOfYears'
     percent_of_seasons_col: str = 'PercentOfSeasons'
     kw_pvalue_col: str = 'KW-pValue'
-    kw_pvalue_col: str = 'KW-pValue'
     kw_seasonality_col: str = 'Seasonality'
+    applied_seasonality_col: str = 'AppliedSeasonality'
     mk_svalue_col: str = 'MK-S'
     mk_variance_col: str = 'MK-Variance'
-    applied_seasonality_col: str = 'AppliedSeasonality'
     mk_pvalue_col: str = 'MK-pvalue'
     confidence_col: str = 'IncreasingLikelihood'
     trend_category_col: str = 'TrendDirection'
     median_slope_col: str = 'SenSlope'
     lower_slope_col: str = 'LowerSlope'
     upper_slope_col: str = 'UpperSlope'
+    _midpointday_col: str = field(default='__tempMidPointDay__', repr=False)
+    _midpointmonth_col: str = field(
+        default='__tempMidPointMonth__', repr=False)
+    _midpointyear_col: str = field(default='__tempMidPointYear__', repr=False)
+    _midpointdate_col: str = field(default='__tempMidPointDate__', repr=False)
+    _midpointproximity_col: str = field(
+        default='__tempMidPointProximity__', repr=False)
     
     
     def __post_init__(self):
@@ -96,8 +158,8 @@ class TrendData:
         
         #%% Complete year and month info
         if self.date_col != None:
-            self.year_col = '_CalendarYear_'
-            self.month_col = '_CalendarMonth_'
+            self.year_col = '__tempCalendarYear__'
+            self.month_col = '__tempCalendarMonth__'
             self.data[self.year_col] = self.data[self.date_col].dt.year
             self.data[self.month_col] = self.data[self.date_col].dt.month
         
@@ -112,6 +174,54 @@ class TrendData:
                trend_end_month=6,
                reduction_method=None,
                annual_midpoint_date=None):
+        '''
+        This method outputs a DataFrame containing trend results which include
+        likelihood of trend direction, trend slope, and a confidence interval
+        for the trend slope.
+
+        Parameters
+        ----------
+        seasons_per_year : int
+            The number of seasons that should be analysed within a given year.
+            Accepted values are 1,2,3,4,6,12, where a value of 1 would generate
+            annual trends and 12 would generate monthly trends.
+        trend_lengths : list of integers
+            A list of the desired trend lengths. Lists can include a single
+            value or multiple values.
+        end_years : list of integers
+            A list of years that describe when the trend period ends.
+        groupby_cols : list
+            A list of columns that should be used to differentiate time series.
+            The default is None.
+        seasonal_test : boolean, optional
+            Specify whether seasonal or non-seasonal trend analyses should be
+            forced regardless of the seasonality test results. The default is
+            None which will apply the trend analyses indicated by the
+            seasonality test.
+        trend_end_month : int, optional
+            Trends don't have to align with the calendar year. This setting
+            specifies the last month in the trend period.
+            The default is 6 (June) to align with water years.
+        reduction_method : string, optional
+            When multiple results exist within a single season, trend analyses
+            require that they are reduced to a single value. Options for this
+            include using a statistical result ('median','mean','average',
+            'maximum','minimum') or a temporal result ('first','last',
+            'midpoint'), where midpoint is the result closest to the midpoint
+            of the season. The default is None.
+        annual_midpoint_date : dictionary with month and day keywords, optional
+            If the reduction_method is 'midpoint' and seasons_per_year is 1,
+            then an alternative target date can be used for reducing annual
+            trend data. For example, to target values closest to the middle
+            of New Zealand spring, use: {'month':10, 'day':16}.
+            The default is None.
+        
+        Returns
+        -------
+        DataFrame
+            Contains a DataFrame of trend results.
+
+        '''
         
         # Validation
         _validate_trend_end_month(trend_end_month)
@@ -122,6 +232,10 @@ class TrendData:
         
         # Classify results into a trend season based on season frequency and trend year
         df = _define_seasons(self, seasons_per_year, trend_end_month)
+        
+        # Create empty list if no groups
+        if groupby_cols == None:
+            groupby_cols = []
         
         # Reduce multiple results within a season to a single result
         if df.duplicated(subset = groupby_cols +

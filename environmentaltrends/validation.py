@@ -4,7 +4,6 @@ These functions validate user input values.
 '''
 
 import pandas as pd
-import numpy as np
 
 #%% Validate TrendData
 
@@ -66,14 +65,12 @@ def _validate_tdf(tdf):
     
     #%% Check the input settings
     
-    boolean_settings = ['censored_values']
-    
-    for setting in boolean_settings:
-        setting_mode = getattr(tdf, setting)
-        if not isinstance(setting_mode, bool):
-            raise ValueError(f'The value supplied to {setting} must be '
-                'True or False. Instead, the value supplied was '
-                f'{repr(setting_mode)}.')
+    setting_mode = getattr(tdf, 'censored_values')
+    if not isinstance(setting_mode, bool):
+        raise ValueError(f'The value supplied to censored_values must be '
+            'True or False. Instead, the value supplied was '
+            f'{repr(setting_mode)}.')
+        
     
     #%% Check column names for conflicts
     

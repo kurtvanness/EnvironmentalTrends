@@ -206,7 +206,7 @@ def mann_kendall(df, tdf):
     
     # Create array/matrix of increases (+1), decreases (-1), and ties (0)
     # to determine the Mann-Kendall S-statistic
-    s = np.sign(np.subtract.outer(data, data))
+    s = np.sign(data - data[:, None])
     # Sum the upper triangle of the matrix
     s = np.triu(s).sum()
     
@@ -259,7 +259,7 @@ def trend_direction(df, tdf, seasonal_test):
     C = 1 - 0.5*p
     
     # Convert confidence to a continuous scale of confidence that the trend is increasing
-    if s > 0:
+    if s < 0:
         C = 1 - C
     
     # Set default trend category

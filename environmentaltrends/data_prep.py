@@ -131,7 +131,7 @@ def _season_reduction(tdf,
             
             # Only quarterly and monthly seasons have midpoints mid-month
             # Use midnight of the 16th (end of 15th)
-            df['__MidpointDay__'] = np.where(df[tdf.freq_num_col].isin([4,12]),
+            df[tdf._midpointday_col] = np.where(df[tdf.freq_num_col].isin([4,12]),
                                              16,
                                              1)
             
@@ -139,9 +139,9 @@ def _season_reduction(tdf,
             # annual midpoint month
             if annual_midpoint_date != None:
                 # Correct midpoint day if there is an annual override date
-                df['__MidpointDay__'] = np.where(df[tdf.freq_num_col] == 1,
+                df[tdf._midpointday_col] = np.where(df[tdf.freq_num_col] == 1,
                                                  annual_midpoint_date['day'],
-                                                 df['__MidpointDay__'])
+                                                 df[tdf._midpointday_col])
                 # Determine the trend month that corresponds with the provided
                 # annual midpoint month
                 trend_annual_midpoint_month = (
@@ -329,26 +329,29 @@ def _season_reduction(tdf,
                 'season without this package.')
             
         # Use conditions to get month and year for midpoint
-        df['__MidpointMonth__'] = np.select(conditions,
+        df[tdf._midpointmonth_col] = np.select(conditions,
                                            midpoint_month,
                                            np.nan)
-        df['__MidpointYear__'] = np.select(conditions,
+        df[tdf._midpointyear_col] = np.select(conditions,
                                            midpoint_year,
                                            np.nan)
         # Construct midpoint date
-        df['__Midpoint__'] = pd.to_datetime(dict(year=df['__MidpointYear__'],
-                                                 month=df['__MidpointMonth__'],
-                                                 day=df['__MidpointDay__']))
+        df[tdf._midpointdate_col] = pd.to_datetime(
+            dict(year=df[tdf._midpointyear_col],
+                 month=df[tdf._midpointmonth_col],
+                 day=df[tdf._midpointday_col]))
         # Determine proximity of result to midpoint
-        df['__Proximity__'] = abs(df[tdf.date_col] - df['__Midpoint__'])
+        df[tdf._midpointproximity_col] = abs(
+            df[tdf.date_col] - df[tdf._midpointdate_col])
         
         # Sort by proximity and use earlier result if ties
-        df = df.sort_values(by=['__Proximity__', tdf.date_col])
+        df = df.sort_values(by=[tdf._midpointproximity_col, tdf.date_col])
         # Keep single result closest to midpoint date
         df = df.drop_duplicates(subset=reduction_groupby_cols)
         # Drop temporary column
-        df = df.drop(columns=['__MidpointDay__', '__MidpointMonth__',
-                    '__MidpointYear__', '__Midpoint__', '__Proximity__'])
+        df = df.drop(columns=[tdf._midpointday_col, tdf._midpointmonth_col,
+                    tdf._midpointyear_col, tdf._midpointdate_col,
+                    tdf._midpointproximity_col])
     
     return df
 
